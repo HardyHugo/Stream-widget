@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Rotating Stream Stats</title>
+
+<style>
+body {
+    margin: 0;
+    background: transparent;
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #ffffff;
+    font-size: 36px;
+    text-shadow: 0 0 15px rgba(0,0,0,0.8);
+}
+
+#statBox {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+
+    opacity: 0;
+    transform: scale(0.95);
+    transition: opacity 1s ease-in-out, transform 1s ease-in-out;
+
+    padding: 20px;
+    box-sizing: border-box;
+
+    /* Twitch-style glow */
+    text-shadow:
+        0 0 10px #9146FF,
+        0 0 20px #9146FF,
+        0 0 30px rgba(0,0,0,0.9);
+}
+</style>
+</head>
+
+<body>
+<div id="statBox">Connecting to Streamlabs…</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.3.0/socket.io.js"></script>
+<script>
+const socketToken = "PUT_YOUR_TOKEN_HERE";
+
+// -------------------------------
+// PERMANENT MEMORY STORAGE
+// -------------------------------
+let memory = JSON.parse(localStorage.getItem("streamStatsMemory")) || {
+    recentFollowers: [],
+    recentSubs: [],
+    recentGifted: [],
+    recentCheers: [],
+    recentRaids: [],
+    recentHosts: [],
+
+    topCheerers: {},     // name: totalBits
+    topGifters: {},      // name: totalGifted
+
+    totalBits: 0,
+    totalGifted: 0,
+
+    longestSub: { name: null, months: 0 },
+
+    raidHistory: []      // list of raiders forever
+};
+
+// Save memory to localStorage
+function saveMemory() {
+    localStorage.setItem("streamStatsMemory", JSON.stringify(memory));
+}
+
+// -------------------------------
+// STREAMLABS SOCKET CONNECTION
+// -------------------------------
+const socket = io("https://sockets.streamlabs.com", {
+    transports: ["websocket"],
+    query: { token: socketToken }
+});
+
+socket.on("connect", () => {
+    showLine("Connected. Waiting for events…");
+});
+
+// -------------------------------
+// EVENT HANDLING
+// -------------------------------
+socket.on("event", (message) => {
+    const type = message.type;
+    const data = message.message;
+
+    switch(type) {
+
+        case "follow":
+            memory.recentFollowers.unshift(data.name);
+            memory.recentFollowers = memory.recentFollowers.slice(0, 20);
+            break;
+
+        case "subscription":
+            memory.recentSubs.unshift(data.name);
+            memory.recentSubs = memory.recentSubs.slice(0, 20);
+
+            if (data.months > memory.longestSub.months) {
+                memory.longestSub = { name: data.name, months: data.months };
+            }
+            break;
+
+        case "gift":
+            memory.recentGifted.unshift(`${data.sender} gifted ${data.count}`);
+            memory.recentGifted = memory.recentGifted.slice(0, 20);
+
+            memory.topGifters[data.sender] = 
+                (memory.topGifters[data.sender] || 0) + data.count;
+
+            memory.totalGifted += data.count;
+            break;
+
+        case "bits":
+            memory.recentCheers.unshift(`${data.name} cheered ${data.amount}`);
+            memory.recentCheers = memory.recentCheers.slice(0, 20);
+
+            memory.topCheerers[data.name] = 
+                (memory.topCheerers[data.name] || 0) + data.amount;
+
+            memory.totalBits += data.amount;
+            break;
+
+        case "raid":
+            memory.recentRaids.unshift(`${data.name} raided with ${data.raiders}`);
+            memory.recentRaids = memory.recentRaids.slice(0, 20);
+
+            memory.raidHistory.unshift(`${data.name} (${data.raiders})`);
+            break;
+
+        case "host":
+            memory.recentHosts.unshift(`${data.name} hosted with ${data.viewers}`);
+            memory.recentHosts = memory.recentHosts.slice(0, 20);
+            break;
+    }
+
+    saveMemory();
+});
+
+// -------------------------------
+// BUILD ROTATION LISTS
+// -------------------------------
+function buildRotation() {
+    let rotation = [];
+
+    // Group 1 — Recent Events
+    rotation.push(...memory.recentFollowers.map(n => `Recent Follower: ${n}`));
+    rotation.push(...memory.recentSubs.map(n => `Recent Sub: ${n}`));
+    rotation.push(...memory.recentGifted.map(n => `Recent Gift: ${n}`));
+    rotation.push(...memory.recentCheers.map(n => `Recent Cheer: ${n}`));
+    rotation.push(...memory.recentRaids.map(n => `Recent Raid: ${n}`));
+    rotation.push(...memory.recentHosts.map(n => `Recent Host: ${n}`));
+
+    // Group 2 — Top Cheerers (top 5)
+    let cheerers = Object.entries(memory.topCheerers)
+        .sort((a,b) => b[1] - a[1])
+        .slice(0,5);
+    cheerers.forEach(([name, bits], i) => {
+        rotation.push(`Top Cheer #${i+1}: ${name} (${bits} bits)`);
+    });
+
+    // Group 3 — Top Gifters (top 5)
+    let gifters = Object.entries(memory.topGifters)
+        .sort((a,b) => b[1] - a[1])
+        .slice(0,5);
+    gifters.forEach(([name, gifts], i) => {
+        rotation.push(`Top Gifter #${i+1}: ${name} (${gifts} gifts)`);
+    });
+
+    // Group 4 — Totals
+    rotation.push(`Total Bits: ${memory.totalBits}`);
+    rotation.push(`Total Gifted Subs: ${memory.totalGifted}`);
+
+    // Group 5 — Longest Subscriber
+    if (memory.longestSub.name) {
+        rotation.push(`Longest Subscriber: ${memory.longestSub.name} (${memory.longestSub.months} months)`);
+    }
+
+    // Group 6 — Raid History
+    rotation.push(...memory.raidHistory.map(r => `Past Raid: ${r}`));
+
+    return rotation.length > 0 ? rotation : ["No recent events yet…"];
+}
+
+// -------------------------------
+// ROTATION ENGINE
+// -------------------------------
+let rotationList = [];
+let index = 0;
+
+function rotate() {
+    rotationList = buildRotation();
+
+    if (index >= rotationList.length) index = 0;
+
+    showLine(rotationList[index]);
+    index++;
+}
+
+function showLine(text) {
+    const box = document.getElementById("statBox");
+
+    // Fade out + shrink
+    box.style.opacity = 0;
+    box.style.transform = "scale(0.95)";
+
+    setTimeout(() => {
+        box.innerText = text;
+
+        // Fade in + grow
+        box.style.opacity = 1;
+        box.style.transform = "scale(1)";
+    }, 200);
+}
+
+setInterval(rotate, 3000); // 3 seconds per line
+</script>
+
+</body>
+</html>
